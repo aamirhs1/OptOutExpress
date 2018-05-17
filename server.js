@@ -4,6 +4,9 @@ const app = express();
 const bodyParser = require('body-parser');
 const mysql = require('mysql');
 const cors = require('cors');
+const multer = require('multer');
+const xlstojson = require("xls-to-json-lc");
+const xlsxtojson = require("xlsx-to-json-lc");
 
 
 
@@ -16,10 +19,28 @@ var handleCORS = function(req, res, next) {
 
 // connection configurations
 const mc = mysql.createConnection({
-    host: 'mysql-instance1.cg9wk7dyi0wp.us-east-2.rds.amazonaws.com',
-    user: 'sysadminoptout',
+    host: 'optoutdb.cg9wk7dyi0wp.us-east-2.rds.amazonaws.com',
+    user: 'sysadmin',
     password: 'secretpass123$',
-    database: 'optout'
+    database: 'optout',
+    typeCast: function castField( field, useDefaultTypeCasting ) {
+
+        // We only want to cast bit fields that have a single-bit in them. If the field
+        // has more than one bit, then we cannot assume it is supposed to be a Boolean.
+        if ( ( field.type === "BIT" ) && ( field.length === 1 ) ) {
+
+            var bytes = field.buffer();
+
+            // A Buffer in Node represents a collection of 8-bit unsigned integers.
+            // Therefore, our single "bit field" comes back as the bits '0000 0001',
+            // which is equivalent to the number 1.
+            return( bytes[ 0 ] === 1 );
+
+        }
+
+        return( useDefaultTypeCasting() );
+
+    }
 });
 
 // connect to database
@@ -67,12 +88,21 @@ app.get('/endusers/:id', function (req, res) {
 
 });
 
+// Retrieve todo with id
+app.get('/enduserswr/:id', function (req, res) {
+    let ResellerID = req.params.id;
+    mc.query('SELECT * FROM endusers where ResellerID=?', ResellerID, function (error, results, fields) {
+        if (error) throw error;
+        return res.send({ error: false, data: results, message: 'EndUser list.' });
+    });
+});
+
 // Add a new todo
 app.post('/endusers', function (req, res) {
 
     var enduser = req.body;
 
-    mc.query("INSERT INTO `endusers` (`Title`, `FirstName`, `LastName`, `BuildingName`, `Street`, `City`, `Country`, `PostCode`, `ContactNumber`, `Email`) VALUES (?,?,?,?,?,?,?,?,?,?)", [enduser.Title, enduser.FirstName, enduser.LastName, enduser.BuildingName, enduser.Street, enduser.City, enduser.Country, enduser.PostCode, enduser.ContactNumber, enduser.Email] , function (error, results, fields) {
+    mc.query("INSERT INTO `endusers` (`Title`, `FirstName`, `LastName`, `BuildingName`, `Street`, `City`, `Country`, `PostCode`, `ContactNumber`, `Email`, `StopCalls`, `StopFax`, `StopText`, `StopMail`, `StopEmail`, `StopAll`, `DateAdded`, `ResellerID`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW(),?)", [enduser.Title, enduser.FirstName, enduser.LastName, enduser.BuildingName, enduser.Street, enduser.City, enduser.Country, enduser.PostCode, enduser.ContactNumber, enduser.Email, enduser.StopCalls, enduser.StopFax, enduser.StopText, enduser.StopMail, enduser.StopEmail, enduser.StopAll, enduser.ResellerID] , function (error, results, fields) {
         if (error) throw error;
         return res.send({ error: false, data: results, message: 'New enduser has been created successfully.' });
     });
@@ -87,7 +117,7 @@ app.put('/endusers', function (req, res) {
         return res.status(400).send({ error: task, message: 'Please provide EndUser and EndUserID' });
     }
 
-    mc.query("UPDATE `endusers` SET `Title`=?,`FirstName`=?,`LastName`=?,`BuildingName`=?,`Street`=?,`City`=?,`Country`=?,`PostCode`=?,`ContactNumber`=?,`Email`=? WHERE `EndUserID`=?", [enduser.Title, enduser.FirstName, enduser.LastName, enduser.BuildingName, enduser.Street, enduser.City, enduser.Country, enduser.PostCode, enduser.ContactNumber, enduser.Email, enduser.EndUserID], function (error, results, fields) {
+    mc.query("UPDATE `endusers` SET `Title`=?,`FirstName`=?,`LastName`=?,`BuildingName`=?,`Street`=?,`City`=?,`Country`=?,`PostCode`=?,`ContactNumber`=?,`Email`=?, `StopCalls`=?,`StopFax`=?,`StopText`=?,`StopMail`=?,`StopEmail`=?,`StopAll`=?,`ResellerID`=? WHERE `EndUserID`=?", [enduser.Title, enduser.FirstName, enduser.LastName, enduser.BuildingName, enduser.Street, enduser.City, enduser.Country, enduser.PostCode, enduser.ContactNumber, enduser.Email,  enduser.StopCalls, enduser.StopFax, enduser.StopText, enduser.StopMail, enduser.StopEmail, enduser.StopAll, enduser.ResellerID, enduser.EndUserID], function (error, results, fields) {
         if (error) throw error;
         return res.send({ error: false, data: results, message: 'EndUser has been updated successfully.' });
     });
@@ -266,11 +296,87 @@ app.post('/login', function (req, res) {
         return res.status(400).send({ error:true, message: 'Please provide User' });
     }
 
-    mc.query("SELECT * FROM `Users` WHERE `Username`=? AND `Password`=? AND `isEnabled`=1", [User.Username, User.Password], function (error, results, fields) {
+    mc.query("SELECT * FROM `users` WHERE `Username`=? AND `Password`=? AND `isEnabled`=1", [User.Username, User.Password], function (error, results, fields) {
         if (error) throw error;
         return res.send({ error: false, data: results, message: 'User Details' });
     });
 });
+
+
+app.post('/resellerlogin', function (req, res) {
+
+    let User = req.body;
+    if (!User) {
+        return res.status(400).send({ error:true, message: 'Please provide User' });
+    }
+
+    mc.query("SELECT * FROM `resellers` WHERE `Username`=? AND `Password`=?", [User.Username, User.Password], function (error, results, fields) {
+        if (error) throw error;
+        return res.send({ error: false, data: results, message: 'User Details' });
+    });
+});
+
+
+//************************************************UPLOAD FILE **************************************************
+
+var storage = multer.diskStorage({ //multers disk storage settings
+        destination: function (req, file, cb) {
+            cb(null, './uploads/')
+        },
+        filename: function (req, file, cb) {
+            var datetimestamp = Date.now();
+            cb(null, file.fieldname + '-' + datetimestamp + '.' + file.originalname.split('.')[file.originalname.split('.').length -1])
+        }
+    });
+var upload = multer({ //multer settings
+                storage: storage,
+                fileFilter : function(req, file, callback) { //file filter
+                    if (['xls', 'xlsx'].indexOf(file.originalname.split('.')[file.originalname.split('.').length-1]) === -1) {
+                        return callback(new Error('Wrong extension type'));
+                    }
+                    callback(null, true);
+                }
+            }).single('file');
+/** API path that will upload the files */
+app.post('/upload', function(req, res) {
+    var exceltojson;
+    upload(req,res,function(err){
+        if(err){
+             res.json({error_code:1,err_desc:err});
+             return;
+        }
+        /** Multer gives us file info in req.file object */
+        if(!req.file){
+            res.json({error_code:1,err_desc:"No file passed"});
+            return;
+        }
+        /** Check the extension of the incoming file and
+         *  use the appropriate module
+         */
+        if(req.file.originalname.split('.')[req.file.originalname.split('.').length-1] === 'xlsx'){
+            exceltojson = xlsxtojson;
+        } else {
+            exceltojson = xlstojson;
+        }
+        try {
+            exceltojson({
+                input: req.file.path,
+                output: null, //since we don't need output.json
+                lowerCaseHeaders:true
+            }, function(err,result){
+                if(err) {
+                    return res.json({error_code:1,err_desc:err, data: null});
+                }
+                res.json({error_code:0,err_desc:null, data: result});
+            });
+        } catch (e){
+            res.json({error_code:1,err_desc:"Corrupted excel file"});
+        }
+    })
+});
+
+// allows "grunt dev" to create a development server with livereload
+//module.exports = app;
 
 
 // all other requests redirect to 404
@@ -287,6 +393,3 @@ process.on('uncaughtException', function (err) {
 app.listen(8080, function () {
     console.log('Node app is running on port 8080');
 });
-
-// allows "grunt dev" to create a development server with livereload
-//module.exports = app;
